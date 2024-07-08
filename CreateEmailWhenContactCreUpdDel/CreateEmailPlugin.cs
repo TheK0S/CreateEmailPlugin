@@ -2,8 +2,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.Remoting.Contexts;
 using System.Text;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 namespace CreateEmailWhenContactCreUpdDel
 {
@@ -14,6 +16,7 @@ namespace CreateEmailWhenContactCreUpdDel
             IPluginExecutionContext context = (IPluginExecutionContext)serviceProvider.GetService(typeof(IPluginExecutionContext));
             IOrganizationServiceFactory serviceFactory = (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
             IOrganizationService service = serviceFactory.CreateOrganizationService(context.UserId);
+            ITracingService tracingService = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
 
             Entity contact = null;
             EntityReference contactRef = null;
@@ -37,6 +40,8 @@ namespace CreateEmailWhenContactCreUpdDel
                 return;
             }
 
+            tracingService.Trace($"message Name: {messageName}");
+
             switch (messageName)
             {
                 case "Create":
@@ -45,6 +50,7 @@ namespace CreateEmailWhenContactCreUpdDel
 
                 case "Update":
                     HandleUpdate(service, context, contact, context.PreEntityImages["PreImage"]);
+                    tracingService.Trace($"case Update is completed");
                     break;
 
                 case "Delete":
@@ -58,50 +64,23 @@ namespace CreateEmailWhenContactCreUpdDel
             string email = contact.GetAttributeValue<string>("emailaddress1");
             string fullname = contact.GetAttributeValue<string>("fullname");
             string contactId = contact.Attributes["contactid"].ToString();
+            string description = $"New contact created - <a href=\"https://org82a3f762.crm11.dynamics.com/main.aspx?etn=contact&id={contactId}&pagetype=entityrecord\">{fullname}</a>";
             DateTime createdon = contact.GetAttributeValue<DateTime>("createdon");
+            string subject = $"New Contact {fullname} created {createdon}";
 
-            Entity emailEntity = new Entity("email");
-            // Set the "to" field
-            Entity toParty = new Entity("activityparty");
-            toParty["partyid"] = contact.ToEntityReference();
-            emailEntity["to"] = new EntityCollection(new List<Entity> { toParty });
-            // Set the "from" field
-            Entity fromParty = new Entity("activityparty");
-            fromParty["partyid"] = new EntityReference("systemuser", context.UserId);
-            emailEntity["from"] = new EntityCollection(new List<Entity> { fromParty });
-
-            emailEntity["subject"] = $"New Contact {fullname} created {createdon}";
-            emailEntity["description"] = $"New contact created - <a href=\"https://org82a3f762.crm11.dynamics.com/main.aspx?etn=contact&id={contactId}&pagetype=entityrecord\">{fullname}</a>";
-            emailEntity["regardingobjectid"] = contact.ToEntityReference();
-
-            service.Create(emailEntity);
+            CreateEmail(service, subject, description, email, contact.ToEntityReference(), new EntityReference("systemuser", context.UserId));
         }
 
         private void HandleUpdate(IOrganizationService service, IPluginExecutionContext context, Entity contact, Entity preImage)
         {
-            if (contact.Contains("emailaddress1") && contact.Contains("fullname"))
-            {
-                string newEmail = contact.GetAttributeValue<string>("emailaddress1");
-                string oldEmail = preImage.GetAttributeValue<string>("emailaddress1");
-                string fullname = contact.GetAttributeValue<string>("fullname");
-                DateTime modifiedon = DateTime.Now;
+            string newEmail = contact.GetAttributeValue<string>("emailaddress1");
+            string oldEmail = preImage.GetAttributeValue<string>("emailaddress1");
+            string fullname = contact.GetAttributeValue<string>("fullname");
+            string description = $"Old email address - {oldEmail} \n New email address - {newEmail}";
+            DateTime modifiedon = DateTime.Now;
+            string subject = $"Contact {fullname} email address changed {modifiedon}";
 
-                Entity emailEntity = new Entity("email");
-                // Set the "to" field
-                Entity toParty = new Entity("activityparty");
-                toParty["partyid"] = contact.ToEntityReference();
-                emailEntity["to"] = new EntityCollection(new List<Entity> { toParty });
-                // Set the "from" field
-                Entity fromParty = new Entity("activityparty");
-                fromParty["partyid"] = new EntityReference("systemuser", context.UserId);
-                emailEntity["from"] = new EntityCollection(new List<Entity> { fromParty });
-
-                emailEntity["subject"] = $"Contact {fullname} email address changed {modifiedon}";
-                emailEntity["description"] = $"Old email address - {oldEmail} \n New email address - {newEmail}";
-                emailEntity["regardingobjectid"] = contact.ToEntityReference();
-
-                service.Create(emailEntity);
-            }
+            CreateEmail(service, subject, description, newEmail, contact.ToEntityReference(), new EntityReference("systemuser", context.UserId));
         }
 
         private void HandleDelete(IOrganizationService service, IPluginExecutionContext context, EntityReference contactRef, Entity preImage)
@@ -111,15 +90,30 @@ namespace CreateEmailWhenContactCreUpdDel
             DateTime modifiedon = DateTime.Now;
 
             Entity emailEntity = new Entity("email");
-            // Set the "from" field
-            Entity fromParty = new Entity("activityparty");
-            fromParty["partyid"] = new EntityReference("systemuser", context.UserId);
-            emailEntity["from"] = new EntityCollection(new List<Entity> { fromParty });
-
+            emailEntity["from"] = new EntityCollection(new[] { new Entity("activityparty") { ["partyid"] = new EntityReference("systemuser", context.UserId) } });
             emailEntity["subject"] = $"Contact {fullname} was deleted {modifiedon}";
             emailEntity["description"] = $"Contact was deleted!";
 
             service.Create(emailEntity);
+        }
+
+        private void CreateEmail(IOrganizationService service, string subject, string description, string email, EntityReference regardingContact, EntityReference sender)
+        {
+            Entity inputEntity = new Entity("new_SetCustomEmailAction");
+
+            inputEntity["Subject"] = subject;
+            inputEntity["Body"] = description;
+            inputEntity["RecepientEmail"] = email;
+            inputEntity["RegardingContact"] = regardingContact;
+            inputEntity["Sender"] = sender;
+
+            OrganizationRequest request = new OrganizationRequest
+            {
+                RequestName = "new_SetCustomEmailAction",
+                Parameters = new ParameterCollection { { "Subject", inputEntity["Subject"] }, { "Body", inputEntity["Body"] }, { "RecepientEmail", inputEntity["RecepientEmail"] }, { "RegardingContact", inputEntity["RegardingContact"] }, { "Sender", inputEntity["Sender"] } }
+            };
+
+            service.Execute(request);
         }
     }
 }
